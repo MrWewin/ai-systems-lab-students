@@ -10,6 +10,7 @@ import openai
 
 from config import Settings
 
+
 # Un mensaje es un diccionario {"role": "system" | "user" | "assistant", "content": "..."}
 Message = dict[str, str]
 
@@ -30,7 +31,10 @@ class LLMError(Exception):
 class LLMClient:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self._client = openai.OpenAI(base_url=settings.base_url, api_key=settings.api_key)
+        self._client = openai.OpenAI(
+            base_url=settings.base_url,
+            api_key=settings.api_key,
+        )
 
     def chat(
         self,
@@ -40,20 +44,42 @@ class LLMClient:
         max_tokens: int | None = None,
         json_mode: bool = False,
     ) -> LLMResponse:
-        # TODO 1: llamar a la API de Chat Completions.
-        #   - Usa self._client.chat.completions.create(...)
-        #   - Parámetros: model, messages, temperature, max_tokens.
-        #     Si temperature/max_tokens son None, usa los valores de self.settings.
-        #   - Si json_mode es True, agrega response_format={"type": "json_object"}.
-        #   - Captura openai.APIError y relánzalo como LLMError
-        #     (la aplicación no debe depender de las excepciones del SDK).
-        #
-        # TODO 2: construir y devolver un LLMResponse a partir de la respuesta:
-        #   - completion.choices[0].message.content  → text
-        #   - completion.model                       → model
-        #   - completion.choices[0].finish_reason    → finish_reason
-        #   - completion.usage.prompt_tokens / completion_tokens
-        raise NotImplementedError("Completa LLMClient.chat")
+        try:
+            kwargs = {
+                "model": self.settings.model,
+                "messages": messages,
+                "temperature": (
+                    temperature
+                    if temperature is not None
+                    else self.settings.temperature
+                ),
+                "max_tokens": (
+                    max_tokens
+                    if max_tokens is not None
+                    else self.settings.max_tokens
+                ),
+            }
+
+            if json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
+
+            completion = self._client.chat.completions.create(**kwargs)
+
+        except openai.APIError as exc:
+            raise LLMError(
+                f"Error al comunicarse con el LLM: {exc}"
+            ) from exc
+
+        choice = completion.choices[0]
+        usage = completion.usage
+
+        return LLMResponse(
+            text=choice.message.content or "",
+            model=completion.model,
+            finish_reason=choice.finish_reason or "",
+            prompt_tokens=usage.prompt_tokens if usage else 0,
+            completion_tokens=usage.completion_tokens if usage else 0,
+        )
 
 
 if __name__ == "__main__":
@@ -63,8 +89,14 @@ if __name__ == "__main__":
     client = LLMClient(load_settings())
     response = client.chat(
         [
-            {"role": "system", "content": "Responde en una sola frase, en español."},
-            {"role": "user", "content": "¿Qué es un Transformer en IA?"},
+            {
+                "role": "system",
+                "content": "Responde en una sola frase, en español.",
+            },
+            {
+                "role": "user",
+                "content": "¿Qué es un Transformer en IA?",
+            },
         ]
     )
     print(response)
