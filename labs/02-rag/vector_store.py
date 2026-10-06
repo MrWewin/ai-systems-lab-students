@@ -43,39 +43,70 @@ class VectorStore:
     def add(self, chunks: list[Chunk], vectors: np.ndarray) -> None:
         if len(chunks) != len(vectors):
             raise ValueError("Debe haber exactamente un vector por fragmento.")
+
         vectors = normalize(np.asarray(vectors, dtype=np.float32))
-        self._vectors = vectors if self._vectors is None else np.vstack([self._vectors, vectors])
+
+        self._vectors = (
+            vectors
+            if self._vectors is None
+            else np.vstack([self._vectors, vectors])
+        )
+
         self.chunks.extend(chunks)
 
     def search(self, query_vector: np.ndarray, k: int) -> list[SearchResult]:
         """Devuelve los k fragmentos más parecidos a la consulta, del más al menos parecido."""
         if self._vectors is None:
             return []
-        # TODO 2: busca por similitud coseno.
-        #   - self._vectors ya está normalizado (ver add); normaliza también query_vector.
-        #   - Con vectores normalizados, el producto punto es la similitud coseno:
-        #     self._vectors @ q calcula en una sola operación el puntaje de TODOS los fragmentos.
-        #   - Ordena los índices de mayor a menor puntaje (np.argsort) y toma los k primeros.
-        #   - Devuelve un SearchResult(chunk, score) por cada uno (score como float de Python).
-        raise NotImplementedError("Completa VectorStore.search")
+
+        # Normalizamos el vector de la consulta.
+        q = normalize(
+            np.asarray(query_vector, dtype=np.float32).reshape(1, -1)
+        )[0]
+
+        # Como los vectores están normalizados, el producto punto
+        # equivale a la similitud coseno.
+        scores = self._vectors @ q
+
+        # Ordenamos de mayor a menor similitud y conservamos los k mejores.
+        top_indices = np.argsort(scores)[::-1][:k]
+
+        return [
+            SearchResult(
+                chunk=self.chunks[i],
+                score=float(scores[i]),
+            )
+            for i in top_indices
+        ]
 
     def save(self, index_dir: Path) -> None:
         index_dir.mkdir(parents=True, exist_ok=True)
+
         np.save(index_dir / VECTORS_FILE, self._vectors)
-        data = {"embedding_model": self.embedding_model, "chunks": [asdict(c) for c in self.chunks]}
+
+        data = {
+            "embedding_model": self.embedding_model,
+            "chunks": [asdict(c) for c in self.chunks],
+        }
+
         (index_dir / CHUNKS_FILE).write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
 
     @classmethod
     def load(cls, index_dir: Path) -> "VectorStore":
         chunks_path = index_dir / CHUNKS_FILE
+
         if not chunks_path.exists():
             raise FileNotFoundError(
                 f"No existe el índice en {index_dir}. Ejecuta primero ingest.py."
             )
+
         data = json.loads(chunks_path.read_text(encoding="utf-8"))
+
         store = cls(data["embedding_model"])
         store.chunks = [Chunk(**c) for c in data["chunks"]]
         store._vectors = np.load(index_dir / VECTORS_FILE)
+
         return store

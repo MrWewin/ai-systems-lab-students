@@ -27,7 +27,13 @@ class Chunk:
 
 def load_documents(data_dir: Path) -> list[Document]:
     paths = sorted(data_dir.glob("*.md"))
-    return [Document(source=path.name, text=path.read_text(encoding="utf-8")) for path in paths]
+    return [
+        Document(
+            source=path.name,
+            text=path.read_text(encoding="utf-8"),
+        )
+        for path in paths
+    ]
 
 
 def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
@@ -36,28 +42,49 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
     Ventanas consecutivas comparten `overlap` palabras, para no cortar una idea
     justo en el borde entre dos fragmentos.
     """
-    # TODO 1: implementa el chunking por ventanas de palabras.
-    #   - Separa el texto en palabras con text.split().
-    #   - Cada ventana empieza `chunk_size - overlap` palabras después de la anterior.
-    #   - Une las palabras de cada ventana con " ".join(...).
-    #   - Detente cuando una ventana llegue al final del texto (sin ventanas repetidas al final).
-    #   - Un texto vacío produce una lista vacía.
-    # Pruébalo con: uv run python labs/02-rag/documents.py
-    raise NotImplementedError("Completa chunk_text")
+    words = text.split()
+
+    if not words:
+        return []
+
+    chunks = []
+    step = chunk_size - overlap
+
+    for start in range(0, len(words), step):
+        end = start + chunk_size
+        chunk = " ".join(words[start:end])
+        chunks.append(chunk)
+
+        if end >= len(words):
+            break
+
+    return chunks
 
 
-def chunk_documents(documents: list[Document], chunk_size: int, overlap: int) -> list[Chunk]:
+def chunk_documents(
+    documents: list[Document],
+    chunk_size: int,
+    overlap: int,
+) -> list[Chunk]:
     return [
-        Chunk(id=f"{doc.source}#{i}", source=doc.source, text=text)
+        Chunk(
+            id=f"{doc.source}#{i}",
+            source=doc.source,
+            text=text,
+        )
         for doc in documents
-        for i, text in enumerate(chunk_text(doc.text, chunk_size, overlap))
+        for i, text in enumerate(
+            chunk_text(doc.text, chunk_size, overlap)
+        )
     ]
 
 
 if __name__ == "__main__":
     sample = "uno dos tres cuatro cinco seis siete ocho nueve diez"
+
     for chunk in chunk_text(sample, chunk_size=4, overlap=1):
         print(chunk)
+
     # Esperado:
     # uno dos tres cuatro
     # cuatro cinco seis siete
