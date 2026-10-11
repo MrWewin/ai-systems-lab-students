@@ -1,3 +1,4 @@
+
 """Tools: funciones del programa que el LLM puede pedir ejecutar.
 
 Una tool tiene dos partes:
@@ -28,18 +29,26 @@ class ToolExecutionError(Exception):
 @dataclass
 class Tool:
     name: str
-    description: str  # el LLM decide CUÁNDO usar la tool leyendo esto
+    description: str  # El LLM decide CUÁNDO usar la tool leyendo esto
     parameters: dict[str, Any]  # JSON Schema: el LLM decide CON QUÉ argumentos leyendo esto
-    run: Callable[[dict[str, Any]], Awaitable[str]]  # ejecuta y devuelve el resultado como texto
-    read_only: bool  # False = acción con efectos (crea, modifica, envía): requiere confirmación
+    run: Callable[[dict[str, Any]], Awaitable[str]]  # Ejecuta y devuelve el resultado como texto
+    read_only: bool  # False = acción con efectos: requiere confirmación
     origin: str  # "local" o el nombre del servidor MCP
 
     def definition(self) -> ToolDefinition:
-        return {"name": self.name, "description": self.description, "parameters": self.parameters}
+        return {
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters,
+        }
 
 
 def local_tool(
-    function: Callable[..., Any], description: str, parameters: dict[str, Any], *, read_only: bool = True
+    function: Callable[..., Any],
+    description: str,
+    parameters: dict[str, Any],
+    *,
+    read_only: bool = True,
 ) -> Tool:
     """Envuelve una función de Python como Tool. El resultado se devuelve al LLM como JSON."""
 
@@ -56,63 +65,178 @@ def local_tool(
     )
 
 
-# --- Implementaciones: código tradicional, determinista ----------------------------------
+# --- Implementaciones: código tradicional, determinista -------------------------------
 
-DIAS_SEMANA = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+DIAS_SEMANA = [
+    "lunes",
+    "martes",
+    "miércoles",
+    "jueves",
+    "viernes",
+    "sábado",
+    "domingo",
+]
 
-# Pesos publicados en la sección "Distribución de la nota" del curso.
-PESOS = {"parcial_1": 0.20, "parcial_2": 0.20, "laboratorios": 0.35, "proyecto": 0.25}
+# Pesos oficiales del curso.
+PESOS = {
+    "parcial_1": 0.20,
+    "parcial_2": 0.20,
+    "laboratorios": 0.35,
+    "proyecto": 0.25,
+}
+
 NOTA_MINIMA = 3.0
 
 
 def fecha_actual() -> dict[str, str]:
+    """Devuelve la fecha actual del sistema y el día de la semana."""
+
     today = date.today()
-    return {"fecha": today.isoformat(), "dia_semana": DIAS_SEMANA[today.weekday()]}
+
+    return {
+        "fecha": today.isoformat(),
+        "dia_semana": DIAS_SEMANA[today.weekday()],
+    }
 
 
-def calcular_nota_final(parcial_1: float, parcial_2: float, laboratorios: float, proyecto: float) -> dict[str, Any]:
-    notas = {"parcial_1": parcial_1, "parcial_2": parcial_2, "laboratorios": laboratorios, "proyecto": proyecto}
+def calcular_nota_final(
+    parcial_1: float,
+    parcial_2: float,
+    laboratorios: float,
+    proyecto: float,
+) -> dict[str, Any]:
+    """Calcula la nota definitiva utilizando los pesos del curso."""
+
+    notas = {
+        "parcial_1": parcial_1,
+        "parcial_2": parcial_2,
+        "laboratorios": laboratorios,
+        "proyecto": proyecto,
+    }
+
+    # Verificamos que las notas estén entre 0.0 y 5.0.
     for nombre, nota in notas.items():
         if not 0.0 <= nota <= 5.0:
-            raise ValueError(f"{nombre} debe estar entre 0.0 y 5.0 (recibido: {nota})")
-    final = sum(nota * PESOS[nombre] for nombre, nota in notas.items())
-    return {"nota_final": round(final, 2), "aprueba": final >= NOTA_MINIMA, "pesos": PESOS}
+            raise ValueError(
+                f"{nombre} debe estar entre 0.0 y 5.0 (recibido: {nota})"
+            )
+
+    # Calculamos el promedio ponderado.
+    final = sum(
+        nota * PESOS[nombre]
+        for nombre, nota in notas.items()
+    )
+
+    return {
+        "nota_final": round(final, 2),
+        "aprueba": final >= NOTA_MINIMA,
+        "pesos": PESOS,
+    }
 
 
-# --- Definiciones: lo que ve el LLM ---------------------------------------------------------
+# --- Definiciones: lo que ve el LLM -----------------------------------------------------
 
 LOCAL_TOOLS = [
     local_tool(
         fecha_actual,
-        description="Devuelve la fecha de hoy (AAAA-MM-DD) y el día de la semana. "
-        "Úsala siempre que la respuesta dependa de la fecha actual.",
-        parameters={"type": "object", "properties": {}, "required": []},
+        # Descripción original restaurada después del Experimento 2.
+        description=(
+            "Devuelve la fecha de hoy (AAAA-MM-DD) y el día de la semana. "
+            "Úsala siempre que la respuesta dependa de la fecha actual."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
     ),
+
     local_tool(
         calcular_nota_final,
-        description="Calcula la nota final del curso (0.0 a 5.0) con los pesos oficiales: "
-        "parciales 20 % cada uno, laboratorios 35 % y proyecto 25 %. Indica si aprueba (mínimo 3.0).",
-        # TODO 1: escribe el JSON Schema de los argumentos (hoy está vacío). Antes de completarlo, ejecuta
-        #   tool_calling.py con una pregunta de notas y observa qué argumentos inventa el modelo.
-        #   El esquema debe declarar:
-        #   - un objeto con cuatro propiedades: parcial_1, parcial_2, laboratorios y proyecto;
-        #   - cada una de tipo "number", con "minimum" 0, "maximum" 5 y una "description" breve;
-        #   - las cuatro en "required".
-        #   Usa como guía el esquema de fecha_actual y la firma de calcular_nota_final.
-        parameters={"type": "object", "properties": {}, "required": []},
+        description=(
+            "Calcula la nota final del curso (0.0 a 5.0) con los pesos oficiales: "
+            "parciales 20 % cada uno, laboratorios 35 % y proyecto 25 %. "
+            "Indica si aprueba (mínimo 3.0)."
+        ),
+
+        # TODO 1 COMPLETADO:
+        # JSON Schema de los cuatro argumentos obligatorios.
+        parameters={
+            "type": "object",
+            "properties": {
+                "parcial_1": {
+                    "type": "number",
+                    "description": "Calificación del primer parcial del curso.",
+                    "minimum": 0,
+                    "maximum": 5,
+                },
+                "parcial_2": {
+                    "type": "number",
+                    "description": "Calificación del segundo parcial del curso.",
+                    "minimum": 0,
+                    "maximum": 5,
+                },
+                "laboratorios": {
+                    "type": "number",
+                    "description": "Calificación final de los laboratorios.",
+                    "minimum": 0,
+                    "maximum": 5,
+                },
+                "proyecto": {
+                    "type": "number",
+                    "description": "Calificación del proyecto final.",
+                    "minimum": 0,
+                    "maximum": 5,
+                },
+            },
+            "required": [
+                "parcial_1",
+                "parcial_2",
+                "laboratorios",
+                "proyecto",
+            ],
+            "additionalProperties": False,
+        },
     ),
 ]
 
 
 async def _demo() -> None:
+    """Muestra las definiciones y ejecuta las herramientas sin utilizar un LLM."""
+
     print("Definiciones que recibe el LLM:\n")
-    print(json.dumps([tool.definition() for tool in LOCAL_TOOLS], ensure_ascii=False, indent=2))
+
+    print(
+        json.dumps(
+            [tool.definition() for tool in LOCAL_TOOLS],
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
     print("\nEjecución directa, sin LLM:")
-    tools = {tool.name: tool for tool in LOCAL_TOOLS}
-    print("fecha_actual        →", await tools["fecha_actual"].run({}))
-    notas = {"parcial_1": 3.5, "parcial_2": 4.0, "laboratorios": 4.2, "proyecto": 3.8}
-    print("calcular_nota_final →", await tools["calcular_nota_final"].run(notas))
+
+    tools = {
+        tool.name: tool
+        for tool in LOCAL_TOOLS
+    }
+
+    print(
+        "fecha_actual        →",
+        await tools["fecha_actual"].run({}),
+    )
+
+    notas = {
+        "parcial_1": 3.5,
+        "parcial_2": 4.0,
+        "laboratorios": 4.2,
+        "proyecto": 3.8,
+    }
+
+    print(
+        "calcular_nota_final →",
+        await tools["calcular_nota_final"].run(notas),
+    )
 
 
 if __name__ == "__main__":

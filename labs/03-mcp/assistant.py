@@ -1,8 +1,9 @@
+
 """Asistente con tools: el LLM PIDE, el programa EJECUTA.
 
 Cada pregunta sigue tres pasos (una sola ronda de tools):
-    1. pedir:     mensajes + definiciones de tools → LLM → texto o tool_calls
-    2. ejecutar:  el programa valida, confirma las acciones y ejecuta cada tool pedida
+    1. pedir: mensajes + definiciones de tools → LLM → texto o tool_calls
+    2. ejecutar: el programa valida, confirma las acciones y ejecuta cada tool
     3. responder: mensajes + resultados (rol "tool") → LLM → respuesta final
 
 CourseAssistant no sabe nada de la consola ni de si una tool es local o viene de un
@@ -17,7 +18,8 @@ from llm_client import LLMClient, LLMResponse, Message, ToolCall
 from prompts import build_messages
 from tools import Tool
 
-# Quien usa el asistente (la interfaz) decide cómo pedir autorización al usuario.
+
+# La interfaz del chatbot decide cómo pedir autorización al usuario.
 ConfirmFn = Callable[[Tool, dict[str, Any]], Awaitable[bool]]
 
 REJECTED = "El usuario NO autorizó esta acción, así que no se ejecutó."
@@ -25,69 +27,154 @@ REJECTED = "El usuario NO autorizó esta acción, así que no se ejecutó."
 
 @dataclass
 class ToolRun:
-    call: ToolCall  # lo que pidió el modelo
+    call: ToolCall
     status: Literal["ok", "error", "rechazada"]
-    result: str  # lo que recibe el modelo como resultado
+    result: str
 
 
 @dataclass
 class AssistantAnswer:
     text: str
     tool_runs: list[ToolRun]
-    messages: list[Message]  # lo que recibió el LLM en la última llamada
-    responses: list[LLMResponse]  # una llamada (sin tools) o dos (pedir + responder)
+    messages: list[Message]
+    responses: list[LLMResponse]
 
 
 class CourseAssistant:
-    def __init__(self, llm: LLMClient, tools: list[Tool], confirm: ConfirmFn):
+    def __init__(
+        self,
+        llm: LLMClient,
+        tools: list[Tool],
+        confirm: ConfirmFn,
+    ):
         self.llm = llm
         self.tools = {tool.name: tool for tool in tools}
+
         if len(self.tools) != len(tools):
             raise ValueError("Hay dos tools con el mismo nombre.")
+
         self.confirm = confirm
 
-    async def answer(self, question: str, history: list[Message] | None = None) -> AssistantAnswer:
+    async def answer(
+        self,
+        question: str,
+        history: list[Message] | None = None,
+    ) -> AssistantAnswer:
+
         messages = build_messages(history or [], question)
         definitions = [tool.definition() for tool in self.tools.values()]
 
-        # 1. Pedir: el modelo decide si responde directamente o pide tools.
+        # 1. PEDIR:
+        # El LLM decide si responde directamente o solicita herramientas.
         first = self.llm.chat(messages, tools=definitions)
+
         if not first.tool_calls:
-            return AssistantAnswer(text=first.text, tool_runs=[], messages=messages, responses=[first])
+            return AssistantAnswer(
+                text=first.text,
+                tool_runs=[],
+                messages=messages,
+                responses=[first],
+            )
 
-        # 2. Ejecutar.
+        # 2. EJECUTAR:
+        # TODO 2 COMPLETADO.
         tool_runs: list[ToolRun] = []
-        # TODO 2: el LLM no recuerda que pidió tools: hay que devolverle su petición y los resultados.
-        #   a. Agrega a messages el turno del asistente con sus tool_calls: first.as_message().
-        #   b. Para cada call de first.tool_calls:
-        #        - ejecútala con self.execute(call) (recuerda await) y guarda el ToolRun en tool_runs;
-        #        - agrega a messages un mensaje con rol "tool":
-        #            {"role": "tool", "tool_call_id": <id de la call>, "content": <resultado del run>}
-        #   ¿Por qué cada resultado debe citar el id de su petición?
-        raise NotImplementedError("Completa el paso 2 de CourseAssistant.answer")
 
-        # 3. Responder: una sola ronda; el modelo ya no puede pedir más tools.
-        final = self.llm.chat(messages, tools=definitions, allow_tools=False)
-        return AssistantAnswer(text=final.text, tool_runs=tool_runs, messages=messages, responses=[first, final])
+        # Agregamos la petición original del LLM al historial.
+        messages.append(first.as_message())
+
+        for call in first.tool_calls:
+
+            # Ejecutamos la herramienta solicitada.
+            run = await self.execute(call)
+
+            # Guardamos el resultado para depuración.
+            tool_runs.append(run)
+
+            # Devolvemos el resultado al LLM.
+            # tool_call_id identifica la petición correspondiente.
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": run.result,
+                }
+            )
+
+        # 3. RESPONDER:
+        # Segunda llamada al LLM con los resultados de las herramientas.
+        # No permitimos nuevas llamadas a tools en esta ronda.
+        final = self.llm.chat(
+            messages,
+            tools=definitions,
+            allow_tools=False,
+        )
+
+        return AssistantAnswer(
+            text=final.text,
+            tool_runs=tool_runs,
+            messages=messages,
+            responses=[first, final],
+        )
 
     async def execute(self, call: ToolCall) -> ToolRun:
-        """Ejecuta una tool pedida por el modelo. Los errores se devuelven al modelo como texto."""
+        """Ejecuta una herramienta y devuelve su resultado o un error."""
+
+        # Buscamos la herramienta solicitada por el LLM.
         tool = self.tools.get(call.name)
+
         if tool is None:
-            return ToolRun(call, "error", f"Error: no existe la tool {call.name!r}.")
+            return ToolRun(
+                call,
+                "error",
+                f"Error: no existe la tool {call.name!r}.",
+            )
+
+        # Interpretamos los argumentos generados por el LLM.
         try:
             arguments = call.arguments()
+
         except ValueError as exc:
-            return ToolRun(call, "error", f"Error: {exc}")
+            return ToolRun(
+                call,
+                "error",
+                f"Error: {exc}",
+            )
 
-        # TODO 5: generar no es ejecutar. Si la tool NO es de solo lectura (tool.read_only es False),
-        #   pide autorización con await self.confirm(tool, arguments). Si el usuario no la autoriza,
-        #   no la ejecutes: devuelve ToolRun(call, "rechazada", REJECTED).
-        #   Antes de completarlo, pide un supletorio en el chatbot: ¿alguien te preguntó algo?
+        # TODO 5 COMPLETADO:
+        # Las herramientas que modifican información requieren autorización.
+        # El programa debe confirmar antes de ejecutarlas.
+        if not tool.read_only:
 
+            authorized = await self.confirm(
+                tool,
+                arguments,
+            )
+
+            # Si el usuario rechaza la acción, no la ejecutamos.
+            if not authorized:
+                return ToolRun(
+                    call,
+                    "rechazada",
+                    REJECTED,
+                )
+
+        # Ejecutamos la herramienta únicamente si es de solo lectura
+        # o si el usuario autorizó la acción.
         try:
             result = await tool.run(arguments)
-        except Exception as exc:  # argumentos inválidos, regla de negocio, servidor caído...
-            return ToolRun(call, "error", f"Error: {exc}")
-        return ToolRun(call, "ok", result)
+
+        except Exception as exc:
+            # Errores de argumentos, reglas de negocio o conexión MCP.
+            return ToolRun(
+                call,
+                "error",
+                f"Error: {exc}",
+            )
+
+        return ToolRun(
+            call,
+            "ok",
+            result,
+        )
 
